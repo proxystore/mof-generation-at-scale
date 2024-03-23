@@ -1,3 +1,11 @@
+# Datasets
+input-files/zn-paddle-pillar/geom_difflinker.ckpt
+input-files/zn-paddle-pillar/hMOF_frag_frag.sdf
+input-files/zn-paddle-pillar/node.json
+
+# Run directories
+run/
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
