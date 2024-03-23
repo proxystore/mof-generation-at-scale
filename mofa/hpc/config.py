@@ -17,7 +17,8 @@ class HPCConfig:
     # How tasks run
     torch_device: str = 'cpu'
     """Device used for DiffLinker training"""
-    lammps_cmd: tuple[str] = ('lmp_serial',)
+    lammps_cmd: tuple[str] = ('/grand/RL-fold/jgpaul/lammps/build-gpu-nvhpc-mix-nompi-noomp/lmp',)
+    # ('lmp_serial',)
     """Command used to launch a non-MPI LAMMPS task"""
 
     # How tasks are distributed

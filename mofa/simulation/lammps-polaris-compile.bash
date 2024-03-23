@@ -49,7 +49,8 @@ export OPAL_PREFIX=/opt/nvidia/hpc_sdk/Linux_x86_64/23.3/comm_libs/openmpi4/open
 export MANPATH=/opt/nvidia/hpc_sdk/Linux_x86_64/23.3/compilers/man:$MANPATH
 
 
-cd /grand/projects/RAPINS/xiaoliyan/lmp20230802stb/build-gpu-nvhpc
+# cd /grand/projects/RAPINS/xiaoliyan/lmp20230802stb/build-gpu-nvhpc
+cd /grand/RL-fold/jgpaul/lammps/build-gpu-nvhpc
 cmake ../cmake -DCMAKE_BUILD_TYPE=release \
 -DCMAKE_C_COMPILER=nvc++ \
 -DCMAKE_CXX_COMPILER=nvc++ \
