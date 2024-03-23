@@ -1,4 +1,5 @@
 """An example of the workflow which runs all aspects of MOF generation in parallel"""
+
 from contextlib import AbstractContextManager
 from functools import partial, update_wrapper
 from typing import TextIO
@@ -28,7 +29,13 @@ from colmena.models.methods import PythonGeneratorMethod
 from colmena.task_server import ParslTaskServer
 from colmena.queue import ColmenaQueues
 from colmena.queue.redis import RedisQueues
-from colmena.thinker import BaseThinker, result_processor, task_submitter, ResourceCounter, event_responder
+from colmena.thinker import (
+    BaseThinker,
+    result_processor,
+    task_submitter,
+    ResourceCounter,
+    event_responder,
+)
 
 from mofa.assembly.assemble import assemble_mof
 from mofa.generator import run_generator
@@ -39,7 +46,9 @@ from mofa.utils.conversions import write_to_string
 from mofa.utils.xyz import xyz_to_mol
 from mofa.hpc.config import configs as hpc_configs
 
-RDLogger.DisableLog('rdApp.*')
+from mofa.proxystream import ProxyStreamRedisQueues
+
+RDLogger.DisableLog("rdApp.*")
 ob.obErrorLog.SetOutputLevel(0)
 
 
@@ -52,16 +61,21 @@ def process_ligand(ligand: LigandDescription) -> dict:
         Record describing the ligand suitable for serialization into CSV file
     """
     # Store the ligand information for debugging purposes
-    record = {"anchor_type": ligand.anchor_type,
-              "smiles": None,
-              "xyz": ligand.xyz,
-              "anchor_atoms": ligand.anchor_atoms,
-              "valid": False}
+    record = {
+        "anchor_type": ligand.anchor_type,
+        "smiles": None,
+        "xyz": ligand.xyz,
+        "anchor_atoms": ligand.anchor_atoms,
+        "valid": False,
+    }
 
     # Try constrained optimization on the ligand
     try:
         ligand.anchor_constrained_optimization()
-    except (ValueError, AttributeError,):
+    except (
+        ValueError,
+        AttributeError,
+    ):
         return record
 
     # Parse each new ligand, determine whether it is a single molecule
@@ -73,7 +87,7 @@ def process_ligand(ligand: LigandDescription) -> dict:
     # Store the smiles string
     Chem.RemoveHs(mol)
     smiles = Chem.MolToSmiles(mol)
-    record['smiles'] = smiles
+    record["smiles"] = smiles
 
     if len(Chem.GetMolFrags(mol)) > 1:
         return record
@@ -82,7 +96,7 @@ def process_ligand(ligand: LigandDescription) -> dict:
     ligand.smiles = Chem.MolToSmiles(mol)
 
     # Update the record, add to ligand queue and prepare it for writing to disk
-    record['valid'] = True
+    record["valid"] = True
     return record
 
 
@@ -108,16 +122,23 @@ class MOFAThinker(BaseThinker, AbstractContextManager):
     generate_queue: deque[tuple[int, int]]
     """Queue used to ensure we generate equal numbers of each type of ligand"""
 
-    def __init__(self,
-                 queues: ColmenaQueues,
-                 out_dir: Path,
-                 num_workers: int,
-                 simulation_budget: int,
-                 generator_config: GeneratorConfig,
-                 node_template: NodeDescription):
+    def __init__(
+        self,
+        queues: ColmenaQueues,
+        out_dir: Path,
+        num_workers: int,
+        simulation_budget: int,
+        generator_config: GeneratorConfig,
+        node_template: NodeDescription,
+    ):
         if num_workers < 2:
-            raise ValueError(f'There must be at least two workers. Supplied: {num_workers}')
-        super().__init__(queues, ResourceCounter(num_workers, task_types=['generation', 'simulation']))
+            raise ValueError(
+                f"There must be at least two workers. Supplied: {num_workers}"
+            )
+        super().__init__(
+            queues,
+            ResourceCounter(num_workers, task_types=["generation", "simulation"]),
+        )
         self.generator_config = generator_config
         self.node_template = node_template
         self.out_dir = out_dir
@@ -127,7 +148,11 @@ class MOFAThinker(BaseThinker, AbstractContextManager):
         self.mof_queue = deque(maxlen=200)  # Starts empty
 
         self.generate_queue = deque()  # Starts with one of each task (ligand, size)
-        tasks = list(product(range(len(generator_config.templates)), generator_config.atom_counts))
+        tasks = list(
+            product(
+                range(len(generator_config.templates)), generator_config.atom_counts
+            )
+        )
         shuffle(tasks)
         self.generate_queue.extend(tasks)
 
@@ -137,8 +162,8 @@ class MOFAThinker(BaseThinker, AbstractContextManager):
         self.database: dict[str, MOFRecord] = {}
 
         # Set aside one node for generation
-        self.rec.reallocate(None, 'generation', 1)
-        self.rec.reallocate(None, 'simulation', 'all')
+        self.rec.reallocate(None, "generation", 1)
+        self.rec.reallocate(None, "simulation", "all")
 
         # Settings associated with MOF assembly
         self.mofs_per_call = num_workers + 4
@@ -147,57 +172,74 @@ class MOFAThinker(BaseThinker, AbstractContextManager):
 
         # Output files
         self._output_files: dict[str, Path | TextIO] = {}
-        for name in ['generation-results', 'simulation-results', 'mof']:
-            self._output_files[name] = run_dir / f'{name}.json.gz'
+        for name in ["generation-results", "simulation-results", "mof"]:
+            self._output_files[name] = run_dir / f"{name}.json.gz"
 
     def __enter__(self):
         """Open the output files"""
         for name, path in self._output_files.items():
-            self._output_files[name] = gzip.open(path, mode='wt', compresslevel=9)
+            self._output_files[name] = gzip.open(path, mode="wt", compresslevel=9)
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         for obj in self._output_files.values():
             obj.close()
 
-    @task_submitter(task_type='generation')
+    @task_submitter(task_type="generation")
     def submit_generation(self):
         """Submit MOF generation tasks when resources are available"""
 
         ligand_id, size = self.generate_queue.popleft()
         ligand = self.generator_config.templates[ligand_id]
         self.queues.send_inputs(
-            input_kwargs={'templates': [ligand], 'n_atoms': size},
-            topic='generation',
-            method='run_generator',
-            task_info={'task': (ligand_id, size)}
+            input_kwargs={"templates": [ligand], "n_atoms": size},
+            topic="generation",
+            method="run_generator",
+            task_info={"task": (ligand_id, size)},
         )
-        self.logger.info(f'Requested more samples of type={ligand.anchor_type} size={size}')
+        self.logger.info(
+            f"Requested more samples of type={ligand.anchor_type} size={size}"
+        )
 
-    @result_processor(topic='generation')
+    @result_processor(topic="generation")
     def store_generation(self, result: Result):
-        """Receive generated ligands, append to the generation queue """
+        """Receive generated ligands, append to the generation queue"""
 
         # Lookup task information
-        ligand_id, size = result.task_info['task']
+        ligand_id, size = result.task_info["task"]
         anchor_type = self.generator_config.templates[ligand_id].anchor_type
 
         # If "complete," then this is signifying the generator has finished and should not contain any ligands
         if result.complete:
             # Start a new task
-            self.generate_queue.append((ligand_id, size))  # Push this generation task back on the queue
-            self.rec.release('generation')
-            self.logger.info(f'Generator task for anchor_type={anchor_type} size={size} finished')
+            self.generate_queue.append(
+                (ligand_id, size)
+            )  # Push this generation task back on the queue
+            self.rec.release("generation")
+            self.logger.info(
+                f"Generator task for anchor_type={anchor_type} size={size} finished"
+            )
 
-            print(result.json(exclude={'inputs', 'value'}), file=self._output_files['generation-results'], flush=False)
+            print(
+                result.json(exclude={"inputs", "value"}),
+                file=self._output_files["generation-results"],
+                flush=False,
+            )
             return
 
         # Retrieve the results
         if not result.success:
-            self.logger.warning(f'Generation task failed: {result.failure_info.exception}\nStack: {result.failure_info.traceback}')
-            print(result.json(exclude={'inputs', 'value'}), file=self._output_files['generation-results'])
+            self.logger.warning(
+                f"Generation task failed: {result.failure_info.exception}\nStack: {result.failure_info.traceback}"
+            )
+            print(
+                result.json(exclude={"inputs", "value"}),
+                file=self._output_files["generation-results"],
+            )
             return
         new_ligands: list[LigandDescription] = result.value
-        self.logger.info(f'Received {len(new_ligands)} new ligands of anchor_type={anchor_type} size={size}')
+        self.logger.info(
+            f"Received {len(new_ligands)} new ligands of anchor_type={anchor_type} size={size}"
+        )
 
         # Check if they are valid
         #  TODO (wardlt): Make this parallel
@@ -207,9 +249,11 @@ class MOFAThinker(BaseThinker, AbstractContextManager):
         for ligand in new_ligands:
             record = process_ligand(ligand)
             all_records.append(record)
-            if record['valid']:
+            if record["valid"]:
                 valid_count += 1
-                self.ligand_queue[anchor_type].append(ligand)  # Shoves old ligands out of the deque
+                self.ligand_queue[anchor_type].append(
+                    ligand
+                )  # Shoves old ligands out of the deque
 
             # TODO (wardlt): Remove this hack when DiffLinker works with COO properly
             if anchor_type != "COO":
@@ -217,9 +261,11 @@ class MOFAThinker(BaseThinker, AbstractContextManager):
                 coo_ligand = ligand.swap_cyano_with_COO()
                 coo_record = process_ligand(coo_ligand)
                 all_records.append(coo_record)
-                if coo_record['valid']:
+                if coo_record["valid"]:
                     self.ligand_queue["COO"].append(coo_ligand)
-        self.logger.info(f'{valid_count} of {len(new_ligands)} are valid. ({valid_count / len(new_ligands) * 100:.1f}%)')
+        self.logger.info(
+            f"{valid_count} of {len(new_ligands)} are valid. ({valid_count / len(new_ligands) * 100:.1f}%)"
+        )
 
         # Write record of generation tasks to disk
         if valid_count > 0:
@@ -227,28 +273,34 @@ class MOFAThinker(BaseThinker, AbstractContextManager):
             self.make_mofs.set()
 
         # Store the generated ligands
-        record_file = self.out_dir / 'all_ligands.csv'
+        record_file = self.out_dir / "all_ligands.csv"
         first_write = not record_file.is_file()
 
-        with record_file.open('a') as fp:
+        with record_file.open("a") as fp:
             writer = DictWriter(fp, all_records[0].keys())
             if first_write:
                 writer.writeheader()
             writer.writerows(all_records)
 
         # Store the task information
-        print(result.json(exclude={'inputs', 'value'}), file=self._output_files['generation-results'], flush=False)
+        print(
+            result.json(exclude={"inputs", "value"}),
+            file=self._output_files["generation-results"],
+            flush=False,
+        )
 
-    @event_responder(event_name='make_mofs')
+    @event_responder(event_name="make_mofs")
     def assemble_new_mofs(self):
         """Pull from the list of ligands and create MOFs. Runs when new MOFs are available"""
 
         # Check that we have enough ligands to start assembly
-        requirements = {'COO': 2, 'cyano': 1}
+        requirements = {"COO": 2, "cyano": 1}
         for anchor_type, count in requirements.items():
             have = len(self.ligand_queue[anchor_type])
             if have < count:
-                self.logger.info(f'Too few candidate for anchor_type={anchor_type}. have={have}, need={count}')
+                self.logger.info(
+                    f"Too few candidate for anchor_type={anchor_type}. have={have}, need={count}"
+                )
                 return
 
         # Make a certain number of attempts
@@ -260,14 +312,14 @@ class MOFAThinker(BaseThinker, AbstractContextManager):
             # Get a sample of ligands
             ligand_choices = {}
             for anchor_type, count in requirements.items():
-                ligand_choices[anchor_type] = [choice(self.ligand_queue[anchor_type])] * count
+                ligand_choices[anchor_type] = [
+                    choice(self.ligand_queue[anchor_type])
+                ] * count
 
             # Attempt assembly
             try:
                 new_mof = assemble_mof(
-                    nodes=[self.node_template],
-                    ligands=ligand_choices,
-                    topology='pcu'
+                    nodes=[self.node_template], ligands=ligand_choices, topology="pcu"
                 )
             except (ValueError, KeyError, IndexError):
                 continue
@@ -282,9 +334,11 @@ class MOFAThinker(BaseThinker, AbstractContextManager):
             self.mof_queue.append(new_mof)
             self.mofs_available.set()
 
-        self.logger.info(f'Created {num_added} new MOFs. Current queue depth: {len(self.mof_queue)}')
+        self.logger.info(
+            f"Created {num_added} new MOFs. Current queue depth: {len(self.mof_queue)}"
+        )
 
-    @task_submitter(task_type='simulation')
+    @task_submitter(task_type="simulation")
     def submit_simulation(self):
         """Submit an MD simulation"""
 
@@ -292,83 +346,151 @@ class MOFAThinker(BaseThinker, AbstractContextManager):
         if len(self.mof_queue) == 0:
             self.mofs_available.clear()
             self.make_mofs.set()
-            self.logger.info('No MOFs are available for simulation. Waiting')
+            self.logger.info("No MOFs are available for simulation. Waiting")
             self.mofs_available.wait()
 
         to_run = self.mof_queue.popleft()
         self.queues.send_inputs(
             to_run,
-            method='run_molecular_dynamics',
-            topic='simulation',
-            task_info={'name': to_run.name}
+            method="run_molecular_dynamics",
+            topic="simulation",
+            task_info={"name": to_run.name},
         )
         self.simulations_left -= 1
-        self.logger.info(f'Started MD simulation for mof={to_run.name}. '
-                         f'Simulation queue depth: {len(self.mof_queue)}. '
-                         f'Budget remaining: {self.simulations_left}')
+        self.logger.info(
+            f"Started MD simulation for mof={to_run.name}. "
+            f"Simulation queue depth: {len(self.mof_queue)}. "
+            f"Budget remaining: {self.simulations_left}"
+        )
 
         if self.simulations_left == 0:
             self.done.set()
-            self.logger.info('No longer submitting tasks.')
+            self.logger.info("No longer submitting tasks.")
 
-    @result_processor(topic='simulation')
+    @result_processor(topic="simulation")
     def store_simulation(self, result: Result):
         """Gather MD results and compute stability"""
 
         # Trigger a new simulation
-        self.rec.release('simulation')
+        self.rec.release("simulation")
 
         # Retrieve the results
         if not result.success:
-            self.logger.warning(f'MD task failed: {result.failure_info.exception}\nStack: {result.failure_info.traceback}')
-            print(result.json(exclude={'inputs', 'value'}), file=self._output_files['simulation-results'])
+            self.logger.warning(
+                f"MD task failed: {result.failure_info.exception}\nStack: {result.failure_info.traceback}"
+            )
+            print(
+                result.json(exclude={"inputs", "value"}),
+                file=self._output_files["simulation-results"],
+            )
             return
         traj = result.value
-        name = result.task_info['name']
+        name = result.task_info["name"]
         record = self.database[name]
-        self.logger.info(f'Received a trajectory of {len(traj)} frames for mof={name}')
+        self.logger.info(f"Received a trajectory of {len(traj)} frames for mof={name}")
 
         # Compute the lattice strain
         scorer = LatticeParameterChange()
-        traj_vasp = [write_to_string(t, 'vasp') for t in traj]
-        record.md_trajectory['uff'] = traj_vasp
+        traj_vasp = [write_to_string(t, "vasp") for t in traj]
+        record.md_trajectory["uff"] = traj_vasp
         strain = scorer.score_mof(record)
-        record.structure_stability['uff-10000'] = strain
-        self.logger.info(f'Lattice change after MD simulation for mof={name}: {strain * 100:.1f}%')
+        record.structure_stability["uff-10000"] = strain
+        self.logger.info(
+            f"Lattice change after MD simulation for mof={name}: {strain * 100:.1f}%"
+        )
 
         # Store the result to disk
-        print(json.dumps(asdict(record)), file=self._output_files['mof'])
-        print(result.json(exclude={'inputs', 'value'}), file=self._output_files['simulation-results'])
+        print(json.dumps(asdict(record)), file=self._output_files["mof"])
+        print(
+            result.json(exclude={"inputs", "value"}),
+            file=self._output_files["simulation-results"],
+        )
 
 
 if __name__ == "__main__":
     # Make the argument parser
     parser = ArgumentParser()
-    parser.add_argument('--simulation-budget', type=int, help='Number of simulations to submit before exiting')
+    parser.add_argument(
+        "--simulation-budget",
+        type=int,
+        help="Number of simulations to submit before exiting",
+    )
 
-    group = parser.add_argument_group(title='MOF Settings', description='Options related to the MOF type being generated')
-    group.add_argument('--node-path', required=True, help='Path to a node record')
+    group = parser.add_argument_group(
+        title="MOF Settings",
+        description="Options related to the MOF type being generated",
+    )
+    group.add_argument("--node-path", required=True, help="Path to a node record")
 
-    group = parser.add_argument_group(title='Generator Settings', description='Options related to how the generation is performed')
-    group.add_argument('--ligand-templates', required=True, nargs='+',
-                       help='Path to YAML files containing a description of the ligands to be created')
-    group.add_argument('--generator-path', required=True,
-                       help='Path to the PyTorch files describing model architecture and weights')
-    group.add_argument('--molecule-sizes', nargs='+', type=int, default=(10, 11, 12), help='Sizes of molecules we should generate')
-    group.add_argument('--num-samples', type=int, default=16, help='Number of molecules to generate at each size')
-    group.add_argument('--gen-batch-size', type=int, default=4, help='Number of ligands to stream per batch')
+    group = parser.add_argument_group(
+        title="Generator Settings",
+        description="Options related to how the generation is performed",
+    )
+    group.add_argument(
+        "--ligand-templates",
+        required=True,
+        nargs="+",
+        help="Path to YAML files containing a description of the ligands to be created",
+    )
+    group.add_argument(
+        "--generator-path",
+        required=True,
+        help="Path to the PyTorch files describing model architecture and weights",
+    )
+    group.add_argument(
+        "--molecule-sizes",
+        nargs="+",
+        type=int,
+        default=(10, 11, 12),
+        help="Sizes of molecules we should generate",
+    )
+    group.add_argument(
+        "--num-samples",
+        type=int,
+        default=16,
+        help="Number of molecules to generate at each size",
+    )
+    group.add_argument(
+        "--gen-batch-size",
+        type=int,
+        default=4,
+        help="Number of ligands to stream per batch",
+    )
 
-    group = parser.add_argument_group(title='Assembly Settings', description='Options related to MOF assembly')
-    group.add_argument('--max-assemble-attempts', default=100,
-                       help='Maximum number of attempts to create a MOF')
+    group = parser.add_argument_group(
+        title="Assembly Settings", description="Options related to MOF assembly"
+    )
+    group.add_argument(
+        "--max-assemble-attempts",
+        default=100,
+        help="Maximum number of attempts to create a MOF",
+    )
 
-    group = parser.add_argument_group(title='Simulation Settings Settings', description='Options related to MOF assembly')
-    group.add_argument('--md-timesteps', default=100000, help='Number of timesteps for the UFF MD simulation', type=int)
-    group.add_argument('--md-snapshots', default=100, help='Maximum number of snapshots during MD simulation', type=int)
+    group = parser.add_argument_group(
+        title="Simulation Settings Settings",
+        description="Options related to MOF assembly",
+    )
+    group.add_argument(
+        "--md-timesteps",
+        default=100000,
+        help="Number of timesteps for the UFF MD simulation",
+        type=int,
+    )
+    group.add_argument(
+        "--md-snapshots",
+        default=100,
+        help="Maximum number of snapshots during MD simulation",
+        type=int,
+    )
 
-    group = parser.add_argument_group(title='Compute Settings', description='Compute environment configuration')
-    group.add_argument('--compute-config', default='local', help='Configuration for the HPC system')
-    group.add_argument('--redis-host', default=node(), help='Host for the Redis server')
+    group = parser.add_argument_group(
+        title="Compute Settings", description="Compute environment configuration"
+    )
+    group.add_argument(
+        "--compute-config", default="local", help="Configuration for the HPC system"
+    )
+    group.add_argument("--redis-host", default=node(), help="Host for the Redis server")
+    group.add_argument("--queue", required=True, choices=["default", "proxystream"])
 
     args = parser.parse_args()
 
@@ -380,11 +502,23 @@ if __name__ == "__main__":
     run_params = args.__dict__.copy()
     start_time = datetime.utcnow()
     params_hash = hashlib.sha256(json.dumps(run_params).encode()).hexdigest()[:6]
-    run_dir = Path('run') / f'parallel-{args.compute_config}-{start_time.strftime("%d%b%y%H%M%S")}-{params_hash}'
+    run_dir = (
+        Path("run")
+        / f'parallel-{args.compute_config}-{start_time.strftime("%d%b%y%H%M%S")}-{params_hash}'
+    )
     run_dir.mkdir(parents=True)
 
     # Configure to a use Redis queue, which allows streaming results form other nodes
-    queues = RedisQueues(hostname=args.redis_host, topics=['generation', 'simulation'])
+    if args.queue == "default":
+        queues = RedisQueues(
+            hostname=args.redis_host, topics=["generation", "simulation"]
+        )
+    else:
+        queues = ProxyStreamRedisQueues(
+            hostname=args.redis_host,
+            topics=["generation", "simulation"],
+            keep_inputs=False,
+        )
 
     # Load the ligand descriptions
     templates = []
@@ -394,70 +528,88 @@ if __name__ == "__main__":
 
     # Load the HPC configuration
     hpc_config = hpc_configs[args.compute_config]()
-    with (run_dir / 'compute-config.json').open('w') as fp:
+    with (run_dir / "compute-config.json").open("w") as fp:
         json.dump(asdict(hpc_config), fp)
 
     # Make the generator settings and the function
     generator = GeneratorConfig(
         generator_path=args.generator_path,
         atom_counts=args.molecule_sizes,
-        templates=templates
+        templates=templates,
     )
-    gen_func = partial(run_generator, model=generator.generator_path, n_samples=args.num_samples, device=hpc_config.torch_device)
-    gen_func = make_decorator(batched)(args.gen_batch_size)(gen_func)  # Wraps gen_func in a decorator in one line
+    gen_func = partial(
+        run_generator,
+        model=generator.generator_path,
+        n_samples=args.num_samples,
+        device=hpc_config.torch_device,
+    )
+    gen_func = make_decorator(batched)(args.gen_batch_size)(
+        gen_func
+    )  # Wraps gen_func in a decorator in one line
     update_wrapper(gen_func, run_generator)
     gen_method = PythonGeneratorMethod(
         function=gen_func,
-        name='run_generator',
+        name="run_generator",
         store_return_value=True,
-        streaming_queue=queues
+        streaming_queue=queues,
     )
 
     # Make the LAMMPS function
-    lmp_runner = LAMMPSRunner(hpc_config.lammps_cmd, lmp_sims_root_path=str(run_dir / 'lmp_run'))
-    md_fun = partial(lmp_runner.run_molecular_dynamics, timesteps=args.md_timesteps, report_frequency=max(1, args.md_timesteps / args.md_snapshots))
+    lmp_runner = LAMMPSRunner(
+        hpc_config.lammps_cmd, lmp_sims_root_path=str(run_dir / "lmp_run")
+    )
+    md_fun = partial(
+        lmp_runner.run_molecular_dynamics,
+        timesteps=args.md_timesteps,
+        report_frequency=max(1, args.md_timesteps / args.md_snapshots),
+    )
     update_wrapper(md_fun, lmp_runner.run_molecular_dynamics)
 
     # Make the thinker
-    thinker = MOFAThinker(queues,
-                          num_workers=hpc_config.num_workers,
-                          generator_config=generator,
-                          simulation_budget=args.simulation_budget,
-                          node_template=node_template,
-                          out_dir=run_dir)
+    thinker = MOFAThinker(
+        queues,
+        num_workers=hpc_config.num_workers,
+        generator_config=generator,
+        simulation_budget=args.simulation_budget,
+        node_template=node_template,
+        out_dir=run_dir,
+    )
 
     # Turn on logging
-    my_logger = logging.getLogger('main')
-    handlers = [logging.StreamHandler(sys.stdout), logging.FileHandler(run_dir / 'run.log')]
+    my_logger = logging.getLogger("main")
+    handlers = [
+        logging.StreamHandler(sys.stdout),
+        logging.FileHandler(run_dir / "run.log"),
+    ]
     for logger in [my_logger, thinker.logger]:
         for handler in handlers:
-            handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
+            handler.setFormatter(
+                logging.Formatter(
+                    "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+                )
+            )
             logger.addHandler(handler)
         logger.setLevel(logging.INFO)
-    my_logger.info(f'Running job in {run_dir} on {hpc_config.num_workers} workers')
+    my_logger.info(f"Running job in {run_dir} on {hpc_config.num_workers} workers")
 
     # Save the run parameters to disk
-    (run_dir / 'params.json').write_text(json.dumps(run_params))
+    (run_dir / "params.json").write_text(json.dumps(run_params))
 
     # Make the Parsl configuration
     config = hpc_config.make_parsl_config(run_dir)
 
     # Launch the thinker and task server
-    doer = ParslTaskServer(
-        methods=[gen_method, md_fun],
-        queues=queues,
-        config=config
-    )
+    doer = ParslTaskServer(methods=[gen_method, md_fun], queues=queues, config=config)
 
     # Launch the utilization logging
-    log_dir = run_dir / 'logs'
+    log_dir = run_dir / "logs"
     log_dir.mkdir(parents=True)
     util_proc = hpc_config.launch_monitor_process(log_dir.absolute())
-    my_logger.info(f'Launched monitoring process. pid={util_proc.pid}')
+    my_logger.info(f"Launched monitoring process. pid={util_proc.pid}")
 
     try:
         doer.start()
-        my_logger.info(f'Running parsl. pid={doer.pid}')
+        my_logger.info(f"Running parsl. pid={doer.pid}")
 
         with thinker:  # Opens the output files
             thinker.run()
