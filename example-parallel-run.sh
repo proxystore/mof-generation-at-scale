@@ -6,9 +6,9 @@
 # conda activate ./env
 
 # Start Redis
-# redis-server --bind 0.0.0.0 --appendonly no --logfile redis.log &
-# redis_pid=$!
-# echo launched redis on $redis_pid
+redis-server --bind 0.0.0.0 --appendonly no --logfile redis.log &
+redis_pid=$!
+echo launched redis on $redis_pid
 
 python run_parallel_workflow.py \
       --node-path input-files/zn-paddle-pillar/node.json \
@@ -17,6 +17,6 @@ python run_parallel_workflow.py \
       --num-samples 32 \
       --simulation-budget 4 \
       --compute-config local \
-      --queue proxystream
+      --stream
 
-# kill $redis_pid
+kill $redis_pid

@@ -1,6 +1,6 @@
 """Functions pertaining to training and running the generative model"""
 from tempfile import TemporaryDirectory
-from typing import Iterator
+from typing import Iterator, List
 from pathlib import Path
 
 from mofa.model import LigandDescription, LigandTemplate
@@ -57,6 +57,43 @@ def train_generator(
 
 
 def run_generator(
+        model: str | Path,
+        templates: list[LigandTemplate],
+        n_atoms: int | str = 8,
+        n_samples: int = 1,
+        n_steps: int = None,
+        device: str = 'cpu'
+) -> List[LigandDescription]:
+    """Produce a set of new linkers given a model
+
+    Args:
+        n_atoms: Number of heavy atoms in the linker molecules to generate
+        templates: Templates of ligands to be generated
+        model: Path to the starting weights
+        n_samples: Number of samples of molecules to generate
+        n_steps: Number of denoising steps; if None, this value is 1,000 by default
+        device: Device on which to run model
+
+    Returns:
+        New ligands
+    """
+
+    with TemporaryDirectory(prefix='mofagen-') as tmpdir:
+        # Produce a sample directory full of XYZ files
+        return list(
+            main_run(
+                templates=templates,
+                output_dir=tmpdir,
+                model=model,
+                linker_size=str(n_atoms),
+                n_samples=n_samples,
+                n_steps=n_steps,
+                device=device
+            )
+        )
+
+
+def run_generator_stream(
         model: str | Path,
         templates: list[LigandTemplate],
         n_atoms: int | str = 8,

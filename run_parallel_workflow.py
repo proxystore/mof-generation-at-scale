@@ -38,7 +38,7 @@ from colmena.thinker import (
 )
 
 from mofa.assembly.assemble import assemble_mof
-from mofa.generator import run_generator
+from mofa.generator import run_generator, run_generator_stream
 from mofa.model import MOFRecord, NodeDescription, LigandTemplate, LigandDescription
 from mofa.scoring.geometry import LatticeParameterChange
 from mofa.simulation.lammps import LAMMPSRunner
@@ -110,6 +110,7 @@ class GeneratorConfig:
     """The templates being generated"""
     atom_counts: list[int]
     """Number of atoms within a linker to generate"""
+    streaming: bool
 
 
 class MOFAThinker(BaseThinker, AbstractContextManager):
@@ -209,7 +210,7 @@ class MOFAThinker(BaseThinker, AbstractContextManager):
         anchor_type = self.generator_config.templates[ligand_id].anchor_type
 
         # If "complete," then this is signifying the generator has finished and should not contain any ligands
-        if result.complete:
+        if self.generator_config.streaming and result.complete:
             # Start a new task
             self.generate_queue.append(
                 (ligand_id, size)
@@ -225,6 +226,13 @@ class MOFAThinker(BaseThinker, AbstractContextManager):
                 flush=False,
             )
             return
+        else:
+            # Push this generation task back on the queue
+            self.generate_queue.append((ligand_id, size))
+            self.rec.release('generation')
+            self.logger.info(
+                f"Generator task for anchor_type={anchor_type} size={size} finished"
+            )
 
         # Retrieve the results
         if not result.success:
@@ -490,7 +498,7 @@ if __name__ == "__main__":
         "--compute-config", default="local", help="Configuration for the HPC system"
     )
     group.add_argument("--redis-host", default=node(), help="Host for the Redis server")
-    group.add_argument("--queue", required=True, choices=["default", "proxystream"])
+    group.add_argument("--stream", action="store_true")
 
     args = parser.parse_args()
 
@@ -509,7 +517,7 @@ if __name__ == "__main__":
     run_dir.mkdir(parents=True)
 
     # Configure to a use Redis queue, which allows streaming results form other nodes
-    if args.queue == "default":
+    if not args.stream:
         queues = RedisQueues(
             hostname=args.redis_host, topics=["generation", "simulation"]
         )
@@ -536,23 +544,33 @@ if __name__ == "__main__":
         generator_path=args.generator_path,
         atom_counts=args.molecule_sizes,
         templates=templates,
+        streaming=args.stream,
     )
-    gen_func = partial(
-        run_generator,
-        model=generator.generator_path,
-        n_samples=args.num_samples,
-        device=hpc_config.torch_device,
-    )
-    gen_func = make_decorator(batched)(args.gen_batch_size)(
-        gen_func
-    )  # Wraps gen_func in a decorator in one line
-    update_wrapper(gen_func, run_generator)
-    gen_method = PythonGeneratorMethod(
-        function=gen_func,
-        name="run_generator",
-        store_return_value=True,
-        streaming_queue=queues,
-    )
+    if args.stream:
+        gen_func = partial(
+            run_generator_stream,
+            model=generator.generator_path,
+            n_samples=args.num_samples,
+            device=hpc_config.torch_device,
+        )
+        # Wraps gen_func in a decorator in one line
+        gen_func = make_decorator(batched)(args.gen_batch_size)(gen_func)
+        update_wrapper(gen_func, run_generator_stream)
+        gen_method = PythonGeneratorMethod(
+            function=gen_func,
+            name="run_generator",
+            store_return_value=True,
+            streaming_queue=queues,
+        )
+    else:
+        gen_func = partial(
+            run_generator,
+            model=generator.generator_path,
+            n_samples=args.num_samples,
+            device=hpc_config.torch_device,
+        )
+        update_wrapper(gen_func, run_generator)
+        gen_method = gen_func
 
     # Make the LAMMPS function
     lmp_runner = LAMMPSRunner(
