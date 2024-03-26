@@ -30,6 +30,9 @@ from colmena.task_server import ParslTaskServer
 from colmena.queue import ColmenaQueues
 from colmena.queue.redis import RedisQueues
 from colmena.thinker import BaseThinker, result_processor, task_submitter, ResourceCounter, event_responder, agent
+from proxystore.connectors.redis import RedisConnector
+from proxystore.store import Store, register_store
+from proxystore.store.ref import into_owned
 
 from mofa.assembly.assemble import assemble_mof
 from mofa.generator import run_generator
@@ -115,7 +118,9 @@ class MOFAThinker(BaseThinker, AbstractContextManager):
                  num_workers: int,
                  simulation_budget: int,
                  generator_config: GeneratorConfig,
-                 node_template: NodeDescription):
+                 node_template: NodeDescription,
+                 ownership: bool,
+                 store: Store[Any]):
         if num_workers < 2:
             raise ValueError(f'There must be at least two workers. Supplied: {num_workers}')
         super().__init__(queues, ResourceCounter(num_workers, task_types=['generation', 'simulation']))
@@ -153,6 +158,8 @@ class MOFAThinker(BaseThinker, AbstractContextManager):
         for name in ['generation-results', 'simulation-results', 'mof']:
             self._output_files[name] = run_dir / f'{name}.json.gz'
 
+        self.ownership = ownership
+
     def __enter__(self):
         """Open the output files"""
         for name, path in self._output_files.items():
@@ -179,6 +186,9 @@ class MOFAThinker(BaseThinker, AbstractContextManager):
     @result_processor(topic='generation')
     def store_generation(self, result: Result):
         """Receive generated ligands, append to the generation queue """
+
+        if self.ownership:
+            result.value = into_owned(result.value)
 
         # Lookup task information
         ligand_id, size = result.task_info['task']
@@ -321,6 +331,9 @@ class MOFAThinker(BaseThinker, AbstractContextManager):
     def store_simulation(self, result: Result):
         """Gather MD results, push result to post-processing queue"""
 
+        if self.ownership:
+            result.value = into_owned(result.value)
+
         # Trigger a new simulation
         self.rec.release('simulation')
 
@@ -364,6 +377,7 @@ if __name__ == "__main__":
     # Make the argument parser
     parser = ArgumentParser()
     parser.add_argument('--simulation-budget', type=int, help='Number of simulations to submit before exiting')
+    parser.add_argument('--ownership', action='store_true', help='Use owned proxies')
 
     group = parser.add_argument_group(title='MOF Settings', description='Options related to the MOF type being generated')
     group.add_argument('--node-path', required=True, help='Path to a node record')
@@ -402,8 +416,16 @@ if __name__ == "__main__":
     run_dir = Path('run') / f'parallel-{args.compute_config}-{start_time.strftime("%d%b%y%H%M%S")}-{params_hash}'
     run_dir.mkdir(parents=True)
 
+    store = Store('default-store', RedisConnector(args.redis_host, 6379))
+    register_store(store)
+
     # Configure to a use Redis queue, which allows streaming results form other nodes
-    queues = RedisQueues(hostname=args.redis_host, topics=['generation', 'simulation'])
+    queues = RedisQueues(
+        hostname=args.redis_host,
+        topics=['generation', 'simulation'],
+        proxystore_name=store.name,
+        proxystore_threshold=1000,
+    )
 
     # Load the ligand descriptions
     templates = []
@@ -443,7 +465,9 @@ if __name__ == "__main__":
                           generator_config=generator,
                           simulation_budget=args.simulation_budget,
                           node_template=node_template,
-                          out_dir=run_dir)
+                          out_dir=run_dir,
+                          ownership=args.ownership,
+                          store=store)
 
     # Turn on logging
     my_logger = logging.getLogger('main')
@@ -482,4 +506,7 @@ if __name__ == "__main__":
             thinker.run()
     finally:
         queues.send_kill_signal()
+
+        store.close()
+        
         util_proc.terminate()
