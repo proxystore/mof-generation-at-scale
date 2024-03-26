@@ -15,7 +15,10 @@ python run_parallel_workflow.py \
       --generator-path input-files/zn-paddle-pillar/geom_difflinker.ckpt \
       --ligand-templates input-files/zn-paddle-pillar/template_*.yml \
       --num-samples 32 \
+      --gen-batch-size 4 \
       --simulation-budget 4 \
+      --md-timesteps 1000000 \
+      --md-snapshots 10 \
       --compute-config local \
       --stream
 

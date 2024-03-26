@@ -79,8 +79,9 @@ class PolarisConfig(HPCConfig):
     """Configuration used on Polaris"""
 
     torch_device = 'cuda'
-    lammps_cmd = ('/lus/eagle/projects/ExaMol/mofa/lammps-2Aug2023/build-kokkos-nompi/lmp '
-                  '-k on g 1 -sf kk').split()
+    # lammps_cmd = ('/grand/RL-fold/jgpaul/lammps/build-gpu-nvhpc-mix-nompi-noomp/lmp '
+    #               '-k on g 1 -sf kk').split()
+    lammps_cmd: tuple[str] = ('/grand/RL-fold/jgpaul/lammps/build-gpu-nvhpc-mix-nompi-noomp/lmp',)
     hosts: list[str] = field(default_factory=list)
 
     def __post_init__(self):
@@ -111,10 +112,10 @@ class PolarisConfig(HPCConfig):
                 provider=LocalProvider(
                     launcher=MpiExecLauncher(bind_cmd="--cpu-bind", overrides="--depth=64 --ppn 1"),
                     worker_init="""
+module load cudatoolkit-standalone/11.8.0
 module load kokkos
-module load nvhpc/23.3
 module list
-source activate /lus/eagle/projects/ExaMol/mofa/mof-generation-at-scale/env-polaris
+source activate /grand/RL-fold/jgpaul/mof-generation-at-scale/env
 which python
 hostname""",
                     nodes_per_block=num_nodes
