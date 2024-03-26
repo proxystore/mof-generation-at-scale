@@ -17,7 +17,7 @@ class HPCConfig:
     # How tasks run
     torch_device: str = 'cpu'
     """Device used for DiffLinker training"""
-    lammps_cmd: tuple[str] = ('lmp_serial',)
+    lammps_cmd: tuple[str] = ('/grand/RL-fold/jgpaul/lammps/build-gpu-nvhpc-mix-nompi-noomp/lmp',)
     """Command used to launch a non-MPI LAMMPS task"""
 
     # How tasks are distributed
@@ -78,7 +78,7 @@ class PolarisConfig(HPCConfig):
     """Configuration used on Polaris"""
 
     torch_device = 'cuda'
-    lammps_cmd = ('/lus/eagle/projects/ExaMol/mofa/lammps-2Aug2023/build-gpu-nompi-mixed/lmp '
+    # lammps_cmd = ('/lus/eagle/projects/ExaMol/mofa/lammps-2Aug2023/build-gpu-nompi-mixed/lmp '
                   '-sf gpu -pk gpu 1').split()
     hosts: list[str] = field(default_factory=list)
 

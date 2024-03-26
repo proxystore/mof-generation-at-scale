@@ -37,6 +37,7 @@ dependencies:
 
   - pip
   - pip:
+    - proxystore@git+https://github.com/proxystore/proxystore@7a53e30dbf55112049d75c6f41e441c65e7177bb
     - git+https://gitlab.com/ase/ase.git
     - git+https://github.com/exalearn/colmena.git  # Fixes for streaming not yet on PyPI
     - -e ..[test]
