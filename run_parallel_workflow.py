@@ -1,7 +1,7 @@
 """An example of the workflow which runs all aspects of MOF generation in parallel"""
 from contextlib import AbstractContextManager
 from functools import partial, update_wrapper
-from typing import TextIO
+from typing import Any, TextIO
 from csv import DictWriter
 from argparse import ArgumentParser
 from dataclasses import dataclass, asdict
@@ -33,6 +33,7 @@ from colmena.thinker import BaseThinker, result_processor, task_submitter, Resou
 from proxystore.connectors.redis import RedisConnector
 from proxystore.store import Store, register_store
 from proxystore.store.ref import into_owned
+from proxystore.proxy import Proxy, is_resolved
 
 from mofa.assembly.assemble import assemble_mof
 from mofa.generator import run_generator
@@ -42,6 +43,7 @@ from mofa.simulation.lammps import LAMMPSRunner
 from mofa.utils.conversions import write_to_string
 from mofa.utils.xyz import xyz_to_mol
 from mofa.hpc.config import configs as hpc_configs
+from mofa.ownership import apply_into_owned, apply_into_owned_generator, patch_logging
 
 RDLogger.DisableLog('rdApp.*')
 ob.obErrorLog.SetOutputLevel(0)
@@ -187,8 +189,14 @@ class MOFAThinker(BaseThinker, AbstractContextManager):
     def store_generation(self, result: Result):
         """Receive generated ligands, append to the generation queue """
 
-        if self.ownership:
-            result.value = into_owned(result.value)
+        if isinstance(result.value, Proxy):
+            assert not is_resolved(result.value)
+            if self.ownership:
+                result.value = into_owned(result.value)
+            else:
+                result.value.__factory__.evict = False
+            logger.info(f'{result.value.__factory__.key} is ligand result')
+            assert not is_resolved(result.value)
 
         # Lookup task information
         ligand_id, size = result.task_info['task']
@@ -331,8 +339,13 @@ class MOFAThinker(BaseThinker, AbstractContextManager):
     def store_simulation(self, result: Result):
         """Gather MD results, push result to post-processing queue"""
 
-        if self.ownership:
-            result.value = into_owned(result.value)
+        if isinstance(result.value, Proxy):
+            assert not is_resolved(result.value)
+            if self.ownership:
+                result.value = into_owned(result.value)
+            else:
+                result.value.__factory__.evict = False
+            assert not is_resolved(result.value)
 
         # Trigger a new simulation
         self.rec.release('simulation')
@@ -423,6 +436,7 @@ if __name__ == "__main__":
     queues = RedisQueues(
         hostname=args.redis_host,
         topics=['generation', 'simulation'],
+        keep_inputs=False,
         proxystore_name=store.name,
         proxystore_threshold=1000,
     )
@@ -445,6 +459,9 @@ if __name__ == "__main__":
         templates=templates
     )
     gen_func = partial(run_generator, model=generator.generator_path, n_samples=args.num_samples, device=hpc_config.torch_device)
+    gen_func = patch_logging(gen_func)
+    if args.ownership:
+        gen_func = apply_into_owned_generator(store.config(), False, args.ownership)(gen_func)
     gen_func = make_decorator(batched)(args.gen_batch_size)(gen_func)  # Wraps gen_func in a decorator in one line
     update_wrapper(gen_func, run_generator)
     gen_method = PythonGeneratorMethod(
@@ -457,6 +474,9 @@ if __name__ == "__main__":
     # Make the LAMMPS function
     lmp_runner = LAMMPSRunner(hpc_config.lammps_cmd, lmp_sims_root_path=str(run_dir / 'lmp_run'))
     md_fun = partial(lmp_runner.run_molecular_dynamics, timesteps=args.md_timesteps, report_frequency=max(1, args.md_timesteps / args.md_snapshots))
+    md_fun = patch_logging(md_fun)
+    if args.ownership:
+        md_fun = apply_into_owned(store.config(), False, args.ownership)(md_fun)
     update_wrapper(md_fun, lmp_runner.run_molecular_dynamics)
 
     # Make the thinker
@@ -471,12 +491,16 @@ if __name__ == "__main__":
 
     # Turn on logging
     my_logger = logging.getLogger('main')
+    ps_logger = logging.getLogger('proxystore')
     handlers = [logging.StreamHandler(sys.stdout), logging.FileHandler(run_dir / 'run.log')]
-    for logger in [my_logger, thinker.logger]:
+    for logger in [my_logger, thinker.logger, ps_logger]:
         for handler in handlers:
             handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
             logger.addHandler(handler)
-        logger.setLevel(logging.INFO)
+        if logger.name.startswith('proxystore'):
+            logger.setLevel(logging.DEBUG)
+        else:
+            logger.setLevel(logging.INFO)
     my_logger.info(f'Running job in {run_dir} on {hpc_config.num_workers} workers')
 
     # Save the run parameters to disk

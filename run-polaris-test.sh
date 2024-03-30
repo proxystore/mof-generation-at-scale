@@ -1,19 +1,24 @@
 #!/bin/bash -le
-#PBS -l select=10:system=polaris
 #PBS -l walltime=01:00:00
-#PBS -l filesystems=home:grand:eagle
+#PBS -l filesystems=home:grand
 #PBS -q debug-scaling
-#PBS -N test-run
-#PBS -A examol
+#PBS -A SuperBERT
+
+# - PBS -l select=10:system=polaris
 
 # Change to working directory
-cd ${PBS_O_WORKDIR}
+cd /grand/RL-fold/jgpaul/mof-generation-at-scale/
+
+module load conda cudatoolkit-standalone/11.8.0 kokkos
 
 # Activate the environment
-conda activate /lus/eagle/projects/ExaMol/mofa/mof-generation-at-scale/env-polaris
+conda activate /grand/RL-fold/jgpaul/mof-generation-at-scale/env
+
+NODES=$(< $PBS_NODEFILE wc -l)
+PRIMARY_RANK=$(head -n 1 $PBS_NODEFILE)
 
 # Start Redis
-redis-server --bind 0.0.0.0 --appendonly no --logfile redis.log &
+redis-server --bind 0.0.0.0 --save "" --appendonly no --logfile redis.log &
 redis_pid=$!
 echo launched redis on $redis_pid
 
@@ -27,7 +32,9 @@ python run_parallel_workflow.py \
       --simulation-budget 256 \
       --md-timesteps 1000000 \
       --md-snapshots 10 \
-      --compute-config polaris
+      --redis-host $PRIMARY_RANK \
+      --compute-config polaris \
+      --ownership
 echo Python done
 
 # Shutdown services

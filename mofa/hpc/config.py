@@ -68,7 +68,7 @@ class LocalConfig(HPCConfig):
 
     def make_parsl_config(self, run_dir: Path) -> Config:
         return Config(
-            executors=[HighThroughputExecutor(max_workers=2)],
+            executors=[HighThroughputExecutor(max_workers=2, worker_debug=True)],
             run_dir=str(run_dir / 'runinfo')
         )
 
@@ -78,7 +78,7 @@ class PolarisConfig(HPCConfig):
     """Configuration used on Polaris"""
 
     torch_device = 'cuda'
-    # lammps_cmd = ('/lus/eagle/projects/ExaMol/mofa/lammps-2Aug2023/build-gpu-nompi-mixed/lmp '
+    lammps_cmd = ('/grand/RL-fold/jgpaul/lammps/build-gpu-nvhpc-mix-nompi-noomp/lmp '
                   '-sf gpu -pk gpu 1').split()
     hosts: list[str] = field(default_factory=list)
 
@@ -104,6 +104,7 @@ class PolarisConfig(HPCConfig):
         # Launch 4 workers per node, one per GPU
         return Config(executors=[
             HighThroughputExecutor(
+                worker_debug=True,
                 max_workers=4,
                 cpu_affinity='block-reverse',
                 available_accelerators=4,
@@ -120,7 +121,7 @@ hostname""",
                 )
             ),
         ],
-            run_dir=str(run_dir)
+            run_dir=str(run_dir / 'runinfo')
         )
 
 
